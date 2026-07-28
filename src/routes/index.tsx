@@ -738,20 +738,130 @@ function FieldGrid({ data }: { data: Record<string, unknown> }) {
   if (!entries.length) {
     return <p className="text-xs italic text-neutral-400">Empty object</p>;
   }
+
+  // Case 1: single {role, content} message
+  if (entries.length <= 3 && isChatMessage(data)) {
+    return <ChatBubble role={data.role} content={data.content} />;
+  }
+
+  // Case 2: object contains a messages array of chat messages
+  const messagesEntry = entries.find(
+    ([, v]) => Array.isArray(v) && v.length > 0 && (v as unknown[]).every(isChatMessage),
+  );
+  if (messagesEntry) {
+    const [msgKey, msgs] = messagesEntry as [string, { role: string; content: string }[]];
+    const others = entries.filter(([k]) => k !== msgKey);
+    return (
+      <div className="space-y-3">
+        {others.length > 0 && (
+          <div className="divide-y divide-neutral-100 rounded-lg border border-neutral-100 bg-neutral-50/40">
+            {others.map(([k, v]) => (
+              <FieldRow key={k} k={k} v={v} />
+            ))}
+          </div>
+        )}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 px-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+              {msgKey}
+            </span>
+            <span className="text-[10px] text-neutral-400">
+              {msgs.length} message{msgs.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {msgs.map((m, i) => (
+              <ChatBubble key={i} role={m.role} content={m.content} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Default: key/value grid
   return (
     <div className="divide-y divide-neutral-100 rounded-lg border border-neutral-100 bg-neutral-50/40">
       {entries.map(([k, v]) => (
-        <div key={k} className="grid grid-cols-[140px_1fr] gap-3 p-3 text-sm">
-          <div className="min-w-0">
-            <span className="inline-block truncate rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-500 ring-1 ring-neutral-200">
-              {k}
-            </span>
-          </div>
-          <div className="min-w-0 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-neutral-800">
-            {renderValue(v)}
+        <FieldRow key={k} k={k} v={v} />
+      ))}
+    </div>
+  );
+}
+
+function FieldRow({ k, v }: { k: string; v: unknown }) {
+  return (
+    <div className="grid grid-cols-[140px_1fr] gap-3 p-3 text-sm">
+      <div className="min-w-0">
+        <span className="inline-block truncate rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-neutral-500 ring-1 ring-neutral-200">
+          {k}
+        </span>
+      </div>
+      <div className="min-w-0 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-neutral-800">
+        {renderValue(v)}
+      </div>
+    </div>
+  );
+}
+
+function ChatBubble({ role, content }: { role: string; content: string }) {
+  const { think, body } = extractThink(content);
+  const roleLower = role.toLowerCase();
+  const styles =
+    roleLower === "user"
+      ? {
+          wrap: "border-sky-200 bg-sky-50/60",
+          badge: "bg-sky-600 text-white",
+          accent: "bg-sky-400",
+        }
+      : roleLower === "assistant"
+        ? {
+            wrap: "border-violet-200 bg-violet-50/50",
+            badge: "bg-violet-600 text-white",
+            accent: "bg-violet-400",
+          }
+        : roleLower === "system"
+          ? {
+              wrap: "border-amber-200 bg-amber-50/60",
+              badge: "bg-amber-600 text-white",
+              accent: "bg-amber-400",
+            }
+          : {
+              wrap: "border-neutral-200 bg-neutral-50",
+              badge: "bg-neutral-700 text-white",
+              accent: "bg-neutral-400",
+            };
+
+  return (
+    <div className={`relative overflow-hidden rounded-lg border ${styles.wrap}`}>
+      <div className={`absolute inset-y-0 left-0 w-1 ${styles.accent}`} />
+      <div className="pl-3">
+        <div className="flex items-center justify-between border-b border-black/5 px-3 py-1.5">
+          <span
+            className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${styles.badge}`}
+          >
+            {role}
+          </span>
+          <span className="text-[10px] text-neutral-400">
+            {content.length.toLocaleString()} chars
+          </span>
+        </div>
+        <div className="space-y-2 px-3 py-3">
+          {think !== null && (
+            <details className="group rounded-md border border-dashed border-neutral-300 bg-white/70">
+              <summary className="cursor-pointer select-none px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wider text-neutral-500 hover:text-neutral-700">
+                Reasoning ({think.length.toLocaleString()} chars)
+              </summary>
+              <div className="whitespace-pre-wrap break-words border-t border-neutral-200 px-3 py-2 font-mono text-[12px] leading-relaxed text-neutral-500">
+                {think}
+              </div>
+            </details>
+          )}
+          <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-neutral-900">
+            {body || <span className="italic text-neutral-400">(empty)</span>}
           </div>
         </div>
-      ))}
+      </div>
     </div>
   );
 }
