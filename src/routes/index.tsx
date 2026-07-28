@@ -683,7 +683,9 @@ function RowCard({
             </p>
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={onLike}
+                aria-pressed={row.feedback === "like"}
                 className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-medium transition ${
                   row.feedback === "like"
                     ? "border-emerald-500 bg-emerald-500 text-white shadow-sm"
@@ -693,7 +695,9 @@ function RowCard({
                 <ThumbsUp size={13} /> Like
               </button>
               <button
+                type="button"
                 onClick={onDislike}
+                aria-pressed={row.feedback === "dislike"}
                 className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-medium transition ${
                   row.feedback === "dislike"
                     ? "border-rose-500 bg-rose-500 text-white shadow-sm"
