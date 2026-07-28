@@ -56,22 +56,27 @@ function uid() {
 function parseInput(text: string): Record<string, unknown>[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
-  // Try JSON first
   try {
     const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) return parsed.map((r) => (isObj(r) ? r : { value: r }));
+    if (Array.isArray(parsed)) {
+      if (parsed.length > 0 && parsed.every(isChatMessage)) {
+        return [{ messages: parsed }];
+      }
+      return parsed.map((r) => (isObj(r) ? r : { value: r }));
+    }
     if (isObj(parsed)) {
-      // maybe {data: [...]}
       for (const k of ["data", "rows", "items", "samples", "examples"]) {
         const v = (parsed as Record<string, unknown>)[k];
-        if (Array.isArray(v)) return v.map((r) => (isObj(r) ? r : { value: r }));
+        if (Array.isArray(v)) {
+          if (v.length > 0 && v.every(isChatMessage)) return [{ messages: v }];
+          return v.map((r) => (isObj(r) ? r : { value: r }));
+        }
       }
       return [parsed];
     }
   } catch {
     /* fall through to JSONL */
   }
-  // JSONL
   const out: Record<string, unknown>[] = [];
   const lines = trimmed.split(/\r?\n/);
   for (const line of lines) {
@@ -89,6 +94,20 @@ function parseInput(text: string): Record<string, unknown>[] {
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isChatMessage(v: unknown): v is { role: string; content: string } {
+  return (
+    isObj(v) &&
+    typeof (v as Record<string, unknown>).role === "string" &&
+    typeof (v as Record<string, unknown>).content === "string"
+  );
+}
+
+function extractThink(content: string): { think: string | null; body: string } {
+  const m = content.match(/^\s*<think>([\s\S]*?)<\/think>\s*/i);
+  if (!m) return { think: null, body: content };
+  return { think: m[1].trim(), body: content.slice(m[0].length) };
 }
 
 function Index() {
