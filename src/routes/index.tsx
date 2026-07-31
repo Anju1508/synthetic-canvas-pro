@@ -140,8 +140,10 @@ function parseCellValue(value: unknown): unknown {
 
 async function parseWorkbook(file: File): Promise<Row[]> {
   const workbook = new ExcelJS.Workbook();
+  // Some workbook producers omit optional sheet names; ExcelJS expects a string.
+  workbook.addWorksheet("Import");
   await workbook.xlsx.load(await file.arrayBuffer());
-  const worksheet = workbook.worksheets[0];
+  const worksheet = workbook.worksheets.find((sheet) => sheet.name !== "Import") ?? workbook.worksheets[0];
   if (!worksheet || worksheet.rowCount < 1) return [];
 
   const headers = worksheet.getRow(1).values as ExcelJS.CellValue[];
