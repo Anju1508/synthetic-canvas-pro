@@ -149,8 +149,8 @@ async function parseWorkbook(file: File): Promise<Row[]> {
     { length: worksheet.columnCount + 1 },
     (_, index) => String(excelValue(headers[index]) ?? "").trim(),
   );
-  const feedbackIndex = columns.findIndex((value) => value.toLowerCase() === "feedback");
-  const commentIndex = columns.findIndex((value) => value.toLowerCase() === "comment");
+  const feedbackIndex = columns.findIndex((value) => value?.toLowerCase() === "feedback");
+  const commentIndex = columns.findIndex((value) => value?.toLowerCase() === "comment");
   const rows: Row[] = [];
 
   worksheet.eachRow((excelRow, rowNumber) => {
@@ -164,7 +164,9 @@ async function parseWorkbook(file: File): Promise<Row[]> {
       if (value !== "" && value !== null && value !== undefined) hasData = true;
     });
     if (!hasData) return;
-    const feedbackValue = String(excelValue(excelRow.getCell(feedbackIndex).value) ?? "").toLowerCase();
+    const feedbackValue = feedbackIndex > 0
+      ? String(excelValue(excelRow.getCell(feedbackIndex).value) ?? "").toLowerCase()
+      : "";
     rows.push({
       id: uid(),
       data,
