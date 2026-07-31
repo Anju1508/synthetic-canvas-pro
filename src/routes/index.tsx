@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useDeferredValue, useMemo, useRef, useState, type ChangeEvent } from "react";
 import ExcelJS from "exceljs";
 import {
   ThumbsUp,
@@ -16,6 +16,10 @@ import {
   Sparkles,
   Database,
   Search,
+  FileSpreadsheet,
+  ChevronLeft,
+  ChevronRight,
+  LoaderCircle,
 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -48,6 +52,8 @@ interface Row {
   feedback: Feedback;
   comment: string;
 }
+
+const PAGE_SIZE = 30;
 
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -110,6 +116,69 @@ function extractThink(content: string): { think: string | null; body: string } {
   return { think: m[1].trim(), body: content.slice(m[0].length) };
 }
 
+function excelValue(value: ExcelJS.CellValue): unknown {
+  if (value === null || value === undefined) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "object") {
+    if ("result" in value) return value.result ?? "";
+    if ("text" in value) return value.text;
+    if ("richText" in value) return value.richText.map((part) => part.text).join("");
+  }
+  return value;
+}
+
+function parseCellValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+async function parseWorkbook(file: File): Promise<Row[]> {
+  const workbook = new ExcelJS.Workbook();
+  // Some workbook producers omit optional sheet names; ExcelJS expects a string.
+  workbook.addWorksheet("Import");
+  await workbook.xlsx.load(await file.arrayBuffer());
+  const worksheet = workbook.worksheets.find((sheet) => sheet.name !== "Import") ?? workbook.worksheets[0];
+  if (!worksheet || worksheet.rowCount < 1) return [];
+
+  const headers = worksheet.getRow(1).values as ExcelJS.CellValue[];
+  const columns = Array.from(
+    { length: worksheet.columnCount + 1 },
+    (_, index) => String(excelValue(headers[index]) ?? "").trim(),
+  );
+  const feedbackIndex = columns.findIndex((value) => String(value ?? "").toLowerCase() === "feedback");
+  const commentIndex = columns.findIndex((value) => String(value ?? "").toLowerCase() === "comment");
+  const rows: Row[] = [];
+
+  worksheet.eachRow((excelRow, rowNumber) => {
+    if (rowNumber === 1) return;
+    const data: Record<string, unknown> = {};
+    let hasData = false;
+    columns.forEach((header, index) => {
+      if (!header || header === "#" || index === feedbackIndex || index === commentIndex) return;
+      const value = excelValue(excelRow.getCell(index).value);
+      data[header] = parseCellValue(value);
+      if (value !== "" && value !== null && value !== undefined) hasData = true;
+    });
+    if (!hasData) return;
+    const feedbackValue = feedbackIndex > 0
+      ? String(excelValue(excelRow.getCell(feedbackIndex).value) ?? "").toLowerCase()
+      : "";
+    rows.push({
+      id: uid(),
+      data,
+      feedback: feedbackValue === "like" || feedbackValue === "dislike" ? feedbackValue : null,
+      comment: commentIndex > 0 ? String(excelValue(excelRow.getCell(commentIndex).value) ?? "") : "",
+    });
+  });
+  return rows;
+}
+
 function Index() {
   const [rows, setRows] = useState<Row[]>([]);
   const [fileName, setFileName] = useState<string>("");
@@ -119,14 +188,25 @@ function Index() {
   const [commentingId, setCommentingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "like" | "dislike" | "none" | "commented">("all");
+  const [page, setPage] = useState(1);
+  const [busy, setBusy] = useState<"import" | "export" | null>(null);
+  const [fileError, setFileError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const deferredSearch = useDeferredValue(search);
 
   const stats = useMemo(() => {
-    const liked = rows.filter((r) => r.feedback === "like").length;
-    const disliked = rows.filter((r) => r.feedback === "dislike").length;
-    const commented = rows.filter((r) => r.comment.trim().length > 0).length;
+    let liked = 0;
+    let disliked = 0;
+    let commented = 0;
+    for (const row of rows) {
+      if (row.feedback === "like") liked += 1;
+      if (row.feedback === "dislike") disliked += 1;
+      if (row.comment.trim()) commented += 1;
+    }
     return { total: rows.length, liked, disliked, commented, pending: rows.length - liked - disliked };
   }, [rows]);
+
+  const rowIndexes = useMemo(() => new Map(rows.map((row, index) => [row.id, index])), [rows]);
 
   const visibleRows = useMemo(() => {
     let r = rows;
@@ -134,20 +214,39 @@ function Index() {
     else if (filter === "dislike") r = r.filter((x) => x.feedback === "dislike");
     else if (filter === "none") r = r.filter((x) => x.feedback === null);
     else if (filter === "commented") r = r.filter((x) => x.comment.trim());
-    if (search.trim()) {
-      const q = search.toLowerCase();
+    if (deferredSearch.trim()) {
+      const q = deferredSearch.toLowerCase();
       r = r.filter((x) => JSON.stringify(x.data).toLowerCase().includes(q));
     }
     return r;
-  }, [rows, filter, search]);
+  }, [rows, filter, deferredSearch]);
+
+  const totalPages = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
+  const activePage = Math.min(page, totalPages);
+  const pageRows = useMemo(
+    () => visibleRows.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
+    [visibleRows, activePage],
+  );
 
   async function handleFile(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
-    const text = await f.text();
-    const parsed = parseInput(text);
-    setRows(parsed.map((d) => ({ id: uid(), data: d, feedback: null, comment: "" })));
-    setFileName(f.name);
+    setBusy("import");
+    setFileError("");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    try {
+      const importedRows = /\.xlsx$/i.test(f.name)
+        ? await parseWorkbook(f)
+        : parseInput(await f.text()).map((data) => ({ id: uid(), data, feedback: null, comment: "" }));
+      if (!importedRows.length) throw new Error("No valid data rows were found in this file.");
+      setRows(importedRows);
+      setFileName(f.name);
+      setPage(1);
+    } catch (error) {
+      setFileError(error instanceof Error ? error.message : "This file could not be imported.");
+    } finally {
+      setBusy(null);
+    }
     e.target.value = "";
   }
 
@@ -225,6 +324,8 @@ function Index() {
 
   async function exportXlsx() {
     if (!rows.length) return;
+    setBusy("export");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     const wb = new ExcelJS.Workbook();
     wb.creator = "SynthLab";
     wb.created = new Date();
@@ -296,19 +397,23 @@ function Index() {
 
     ws.views = [{ state: "frozen", ySplit: 1 }];
 
-    const buf = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buf], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const base = fileName.replace(/\.(jsonl?|txt)$/i, "") || "dataset";
-    a.download = `${base}-reviewed.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    try {
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const base = fileName.replace(/\.(jsonl?|txt|xlsx)$/i, "") || "dataset";
+      a.download = `${base}-reviewed.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -327,30 +432,38 @@ function Index() {
           </div>
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={() => fileRef.current?.click()}
+              disabled={busy !== null}
               className="inline-flex items-center gap-2 rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-700 shadow-sm transition hover:border-neutral-400 hover:bg-neutral-50"
             >
-              <Upload size={14} /> Upload
+              {busy === "import" ? <LoaderCircle className="animate-spin" size={14} /> : <Upload size={14} />} Upload
             </button>
             <input
               ref={fileRef}
               type="file"
-              accept=".json,.jsonl,.txt,application/json"
+              accept=".json,.jsonl,.txt,.xlsx,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               className="hidden"
               onChange={handleFile}
             />
             <button
               onClick={exportXlsx}
-              disabled={!rows.length}
+              disabled={!rows.length || busy !== null}
               className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Download size={14} /> Export XLSX
+              {busy === "export" ? <LoaderCircle className="animate-spin" size={14} /> : <Download size={14} />} {busy === "export" ? "Preparing…" : "Export XLSX"}
             </button>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-6 py-8">
+        {fileError && (
+          <div role="alert" className="mb-4 flex items-center justify-between rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            <span>{fileError}</span>
+            <button type="button" onClick={() => setFileError("")} aria-label="Dismiss error"><X size={15} /></button>
+          </div>
+        )}
         {/* Empty state */}
         {rows.length === 0 ? (
           <EmptyState
@@ -379,7 +492,7 @@ function Index() {
                   />
                   <input
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); }}
                     placeholder="Search across all fields..."
                     className="w-full rounded-lg border border-neutral-200 bg-neutral-50 py-2 pl-9 pr-3 text-sm text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:bg-white focus:outline-none"
                   />
@@ -396,7 +509,8 @@ function Index() {
                   ).map(([k, label]) => (
                     <button
                       key={k}
-                      onClick={() => setFilter(k)}
+                      type="button"
+                      onClick={() => { setFilter(k); setPage(1); }}
                       className={`rounded-md px-2.5 py-1.5 font-medium transition ${
                         filter === k
                           ? "bg-white text-neutral-900 shadow-sm"
@@ -430,8 +544,8 @@ function Index() {
                   No samples match this filter.
                 </div>
               ) : (
-                visibleRows.map((row, idx) => {
-                  const realIdx = rows.findIndex((r) => r.id === row.id);
+                pageRows.map((row) => {
+                  const realIdx = rowIndexes.get(row.id) ?? 0;
                   return (
                     <RowCard
                       key={row.id}
@@ -454,12 +568,24 @@ function Index() {
                       onToggleComment={() =>
                         setCommentingId((c) => (c === row.id ? null : row.id))
                       }
-                      onCommentChange={(v) => updateComment(row.id, v)}
+                      onCommentSave={(v) => updateComment(row.id, v)}
                     />
                   );
                 })
               )}
             </section>
+            {visibleRows.length > PAGE_SIZE && (
+              <nav aria-label="Dataset pages" className="mt-5 flex items-center justify-between border-t border-neutral-200 pt-4">
+                <p className="text-xs text-neutral-500">
+                  Showing {(activePage - 1) * PAGE_SIZE + 1}–{Math.min(activePage * PAGE_SIZE, visibleRows.length)} of {visibleRows.length.toLocaleString()}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button type="button" aria-label="Previous page" disabled={activePage === 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="rounded-lg border border-neutral-300 bg-white p-2 text-neutral-700 disabled:opacity-40"><ChevronLeft size={15} /></button>
+                  <span className="min-w-20 text-center text-xs font-medium text-neutral-700">{activePage} / {totalPages}</span>
+                  <button type="button" aria-label="Next page" disabled={activePage === totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))} className="rounded-lg border border-neutral-300 bg-white p-2 text-neutral-700 disabled:opacity-40"><ChevronRight size={15} /></button>
+                </div>
+              </nav>
+            )}
           </>
         )}
       </main>
@@ -489,8 +615,9 @@ function EmptyState({
         Upload your synthetic dataset
       </h2>
       <p className="mx-auto mt-2 max-w-md text-sm text-neutral-500">
-        Drop in a <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs">.json</code> array or
-        a <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs">.jsonl</code> file of samples.
+        Drop in a <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs">.json</code>,
+        <code className="rounded bg-neutral-100 px-1 py-0.5 text-xs">.jsonl</code>, or
+        <code className="rounded bg-emerald-50 px-1 py-0.5 text-xs text-emerald-700">.xlsx</code> file of samples.
         Review each row with likes, dislikes, and comments — then export a formatted XLSX for your
         fine-tuning pipeline.
       </p>
@@ -499,7 +626,7 @@ function EmptyState({
           onClick={onPick}
           className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-neutral-800"
         >
-          <Upload size={14} /> Choose file
+          <FileSpreadsheet size={14} /> Choose JSON or Excel
         </button>
         <button
           onClick={onSample}
@@ -563,7 +690,7 @@ function RowCard({
   onLike,
   onDislike,
   onToggleComment,
-  onCommentChange,
+  onCommentSave,
 }: {
   row: Row;
   index: number;
@@ -579,8 +706,9 @@ function RowCard({
   onLike: () => void;
   onDislike: () => void;
   onToggleComment: () => void;
-  onCommentChange: (v: string) => void;
+  onCommentSave: (v: string) => void;
 }) {
+  const [commentDraft, setCommentDraft] = useState(row.comment);
   const feedbackRing =
     row.feedback === "like"
       ? "ring-emerald-200 border-emerald-200"
@@ -720,8 +848,11 @@ function RowCard({
 
             {(showComment || row.comment) && (
               <textarea
-                value={row.comment}
-                onChange={(e) => onCommentChange(e.target.value)}
+                value={commentDraft}
+                onChange={(e) => setCommentDraft(e.target.value)}
+                onBlur={() => {
+                  if (commentDraft !== row.comment) onCommentSave(commentDraft);
+                }}
                 placeholder="Notes for reviewers, quality flags, edge cases..."
                 className="mt-1 min-h-[80px] w-full resize-y rounded-lg border border-neutral-200 bg-white p-2 text-xs text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none"
               />
