@@ -149,8 +149,8 @@ async function parseWorkbook(file: File): Promise<Row[]> {
     { length: worksheet.columnCount + 1 },
     (_, index) => String(excelValue(headers[index]) ?? "").trim(),
   );
-  const feedbackIndex = columns.findIndex((value) => value?.toLowerCase() === "feedback");
-  const commentIndex = columns.findIndex((value) => value?.toLowerCase() === "comment");
+  const feedbackIndex = columns.findIndex((value) => String(value ?? "").toLowerCase() === "feedback");
+  const commentIndex = columns.findIndex((value) => String(value ?? "").toLowerCase() === "comment");
   const rows: Row[] = [];
 
   worksheet.eachRow((excelRow, rowNumber) => {
