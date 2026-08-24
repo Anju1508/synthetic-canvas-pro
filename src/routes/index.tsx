@@ -1252,15 +1252,19 @@ function QARecordView({ data }: { data: Record<string, unknown> }) {
       </div>
 
       <Section title="question" tone="sky" meta={`${question.length.toLocaleString()} chars`}>
-        <div className="whitespace-pre-wrap break-words text-[14px] font-medium leading-relaxed text-neutral-900">
-          {question || <span className="italic text-neutral-400">(empty)</span>}
-        </div>
+        {question ? (
+          <RichText text={question} className="text-[14px] font-medium leading-relaxed text-neutral-900" />
+        ) : (
+          <span className="text-sm italic text-neutral-400">(empty)</span>
+        )}
       </Section>
 
       <Section title="answer" tone="emerald" meta={`${answer.length.toLocaleString()} chars`}>
-        <div className="whitespace-pre-wrap break-words text-[13.5px] leading-relaxed text-neutral-900">
-          {answer || <span className="italic text-neutral-400">(empty)</span>}
-        </div>
+        {answer ? (
+          <RichText text={answer} className="text-[13.5px] leading-relaxed text-neutral-900" />
+        ) : (
+          <span className="text-sm italic text-neutral-400">(empty)</span>
+        )}
       </Section>
 
       {cot && (
@@ -1271,9 +1275,7 @@ function QARecordView({ data }: { data: Record<string, unknown> }) {
           collapsible
           defaultOpen={false}
         >
-          <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-600">
-            {cot}
-          </div>
+          <RichText text={cot} className="text-[13px] leading-relaxed text-neutral-600" />
         </Section>
       )}
 
