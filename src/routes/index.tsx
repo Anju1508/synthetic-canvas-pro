@@ -690,8 +690,8 @@ function StatCard({
   icon,
 }: {
   label: string;
-  value: number;
-  accent: "neutral" | "emerald" | "rose" | "amber" | "slate";
+  value: number | string;
+  accent: "neutral" | "emerald" | "rose" | "amber" | "slate" | "indigo";
   icon: React.ReactNode;
 }) {
   const accents: Record<string, string> = {
@@ -700,6 +700,7 @@ function StatCard({
     rose: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
     amber: "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
     slate: "bg-slate-50 text-slate-700 ring-1 ring-slate-200",
+    indigo: "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200",
   };
   return (
     <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
