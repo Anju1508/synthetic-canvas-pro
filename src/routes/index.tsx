@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useDeferredValue, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useDeferredValue, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import ExcelJS from "exceljs";
 import {
   ThumbsUp,
@@ -910,6 +910,11 @@ function FieldGrid({ data }: { data: Record<string, unknown> }) {
     );
   }
 
+  // Case 3: QA fine-tuning record (question_text / answer / cot / chunk_content)
+  if (typeof data.question_text === "string" || typeof data.answer === "string") {
+    return <QARecordView data={data} />;
+  }
+
   // Default: key/value grid
   return (
     <div className="divide-y divide-neutral-100 rounded-lg border border-neutral-100 bg-neutral-50/40">
@@ -919,6 +924,384 @@ function FieldGrid({ data }: { data: Record<string, unknown> }) {
     </div>
   );
 }
+
+const QA_MAIN_KEYS = ["question_text", "answer", "cot", "chunk_content"];
+const QA_META_ORDER = [
+  "questionId",
+  "source_doc",
+  "source_subject",
+  "section",
+  "chunkName",
+  "chunk_page_range",
+  "quality_tier",
+  "quality_score",
+  "citation_state",
+  "cited_manual",
+  "cited_page",
+  "citation_in_range",
+  "defect_class",
+  "tags",
+  "score",
+  "provenance_exact",
+  "held_out",
+  "defunct",
+  "abstention",
+];
+
+function parseTags(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String);
+  if (typeof v === "string" && v.trim()) {
+    try {
+      const p = JSON.parse(v);
+      if (Array.isArray(p)) return p.map(String);
+    } catch {
+      return v.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function Chip({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "green" | "amber" | "rose" | "sky" | "violet";
+}) {
+  const tones = {
+    neutral: "border-neutral-200 bg-white text-neutral-700",
+    green: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    amber: "border-amber-200 bg-amber-50 text-amber-800",
+    rose: "border-rose-200 bg-rose-50 text-rose-800",
+    sky: "border-sky-200 bg-sky-50 text-sky-800",
+    violet: "border-violet-200 bg-violet-50 text-violet-800",
+  } as const;
+  return (
+    <span
+      className={`inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] ${tones[tone]}`}
+      title={`${label}: ${value}`}
+    >
+      <span className="font-semibold uppercase tracking-wider opacity-60">{label}</span>
+      <span className="truncate font-medium">{value}</span>
+    </span>
+  );
+}
+
+function Section({
+  title,
+  tone,
+  children,
+  meta,
+  collapsible = false,
+  defaultOpen = true,
+}: {
+  title: string;
+  tone: "sky" | "emerald" | "violet" | "neutral";
+  children: ReactNode;
+  meta?: string;
+  collapsible?: boolean;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const tones = {
+    sky: { wrap: "border-sky-200 bg-sky-50/50", bar: "bg-sky-400", badge: "bg-sky-600 text-white" },
+    emerald: {
+      wrap: "border-emerald-200 bg-emerald-50/40",
+      bar: "bg-emerald-400",
+      badge: "bg-emerald-600 text-white",
+    },
+    violet: {
+      wrap: "border-violet-200 bg-violet-50/40",
+      bar: "bg-violet-400",
+      badge: "bg-violet-600 text-white",
+    },
+    neutral: {
+      wrap: "border-neutral-200 bg-neutral-50",
+      bar: "bg-neutral-400",
+      badge: "bg-neutral-700 text-white",
+    },
+  }[tone];
+
+  return (
+    <div className={`relative overflow-hidden rounded-lg border ${tones.wrap}`}>
+      <div className={`absolute inset-y-0 left-0 w-1 ${tones.bar}`} />
+      <div className="pl-3">
+        <div className="flex items-center justify-between gap-2 border-b border-black/5 px-3 py-1.5">
+          <span
+            className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${tones.badge}`}
+          >
+            {title}
+          </span>
+          <div className="flex items-center gap-2">
+            {meta && <span className="text-[10px] text-neutral-500">{meta}</span>}
+            {collapsible && (
+              <button
+                type="button"
+                onClick={() => setOpen((o) => !o)}
+                className="rounded-md border border-neutral-200 bg-white px-2 py-0.5 text-[10px] font-medium text-neutral-600 hover:text-neutral-900"
+              >
+                {open ? "Hide" : "Show"}
+              </button>
+            )}
+          </div>
+        </div>
+        {(!collapsible || open) && <div className="px-3 py-3">{children}</div>}
+      </div>
+    </div>
+  );
+}
+
+function HtmlTableView({ html }: { html: string }) {
+  const tables = useMemo(() => {
+    const out: { headers: string[]; rows: string[][] }[] = [];
+    const decode = (s: string) =>
+      s
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&quot;/g, '"')
+        .trim();
+    for (const tableMatch of html.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+      const t = tableMatch[0];
+      const rows: string[][] = [];
+      let headers: string[] = [];
+      for (const trMatch of t.matchAll(/<tr[\s\S]*?<\/tr>/gi)) {
+        const tr = trMatch[0];
+        const isHead = /<th[\s>]/i.test(tr);
+        const cells = [...tr.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) =>
+          decode(c[1] ?? ""),
+        );
+        if (!cells.length) continue;
+        if (isHead && !headers.length) headers = cells;
+        else rows.push(cells);
+      }
+      if (rows.length || headers.length) out.push({ headers, rows });
+    }
+    return out;
+  }, [html]);
+
+  const plain = useMemo(() => html.replace(/<table[\s\S]*?<\/table>/gi, "").trim(), [html]);
+
+  return (
+    <div className="space-y-3">
+      {plain && (
+        <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-neutral-800">
+          {plain}
+        </div>
+      )}
+      {tables.map((t, ti) => (
+        <div key={ti} className="overflow-x-auto rounded-lg border border-neutral-200 bg-white">
+          <table className="w-full border-collapse text-[12.5px]">
+            {t.headers.length > 0 && (
+              <thead>
+                <tr className="bg-neutral-100">
+                  {t.headers.map((h, i) => (
+                    <th
+                      key={i}
+                      className="border-b border-neutral-200 px-3 py-1.5 text-left font-semibold text-neutral-700"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+            )}
+            <tbody>
+              {t.rows.map((r, ri) => (
+                <tr key={ri} className={ri % 2 ? "bg-neutral-50/60" : "bg-white"}>
+                  {r.map((c, ci) => (
+                    <td
+                      key={ci}
+                      className="border-b border-neutral-100 px-3 py-1.5 align-top text-neutral-800"
+                    >
+                      {c}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RichText({ text, className }: { text: string; className?: string }) {
+  const blocks = useMemo(() => {
+    const lines = text.replace(/\u00a0/g, " ").split(/\n/);
+    const out: { type: "p" | "li"; content: string }[] = [];
+    for (const raw of lines) {
+      const line = raw.replace(/[\u2011\u2013\u2014]/g, "-").trimEnd();
+      if (!line.trim()) continue;
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+      if (bullet) out.push({ type: "li", content: bullet[1] ?? "" });
+      else out.push({ type: "p", content: line.replace(/^#{1,6}\s*/, "") });
+    }
+    return out;
+  }, [text]);
+
+  const inline = (s: string, key: number) => (
+    <span key={key}>
+      {s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+        part.startsWith("**") && part.endsWith("**") ? (
+          <strong key={i} className="font-semibold text-neutral-900">
+            {part.slice(2, -2)}
+          </strong>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </span>
+  );
+
+  return (
+    <div className={`space-y-1.5 ${className ?? ""}`}>
+      {blocks.map((b, i) =>
+        b.type === "li" ? (
+          <div key={i} className="flex gap-2">
+            <span className="select-none text-neutral-400">•</span>
+            <span className="min-w-0 break-words">{inline(b.content, i)}</span>
+          </div>
+        ) : (
+          <p key={i} className="break-words">
+            {inline(b.content, i)}
+          </p>
+        ),
+      )}
+    </div>
+  );
+}
+
+function QARecordView({ data }: { data: Record<string, unknown> }) {
+  const question = typeof data.question_text === "string" ? data.question_text : "";
+  const answer = typeof data.answer === "string" ? data.answer : "";
+  const cot = typeof data.cot === "string" ? data.cot.trim() : "";
+  const chunk = typeof data.chunk_content === "string" ? data.chunk_content : "";
+  const tags = parseTags(data.tags);
+  const tier = typeof data.quality_tier === "string" ? data.quality_tier : "";
+  const defects = typeof data.defect_class === "string" && data.defect_class.trim()
+    ? data.defect_class.split(",").map((d) => d.trim()).filter(Boolean)
+    : [];
+  const extras = Object.entries(data).filter(
+    ([k]) => !QA_MAIN_KEYS.includes(k) && !QA_META_ORDER.includes(k),
+  );
+  const metaKeys = QA_META_ORDER.filter(
+    (k) => k in data && !["tags", "defect_class", "quality_tier", "quality_score"].includes(k),
+  );
+
+  return (
+    <div className="space-y-3">
+      {/* Metadata header */}
+      <div className="rounded-lg border border-neutral-200 bg-neutral-50/70 p-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {tier && (
+            <Chip
+              label="tier"
+              value={tier}
+              tone={tier === "clean" ? "green" : tier === "warn" ? "amber" : "rose"}
+            />
+          )}
+          {"quality_score" in data && (
+            <Chip
+              label="score"
+              value={String(data.quality_score)}
+              tone={Number(data.quality_score) >= 8 ? "green" : Number(data.quality_score) >= 5 ? "amber" : "rose"}
+            />
+          )}
+          {typeof data.citation_state === "string" && (
+            <Chip
+              label="citation"
+              value={data.citation_state}
+              tone={data.citation_state === "ok" ? "green" : "rose"}
+            />
+          )}
+          {tags.map((t) => (
+            <span
+              key={t}
+              className="rounded-md border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700"
+            >
+              #{t}
+            </span>
+          ))}
+          {defects.map((d) => (
+            <span
+              key={d}
+              className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-medium text-rose-700"
+            >
+              ⚠ {d}
+            </span>
+          ))}
+        </div>
+        <div className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+          {metaKeys.map((k) => (
+            <div key={k} className="flex min-w-0 items-baseline gap-2 text-[12px]">
+              <span className="shrink-0 font-semibold uppercase tracking-wider text-neutral-400">
+                {k.replace(/_/g, " ")}
+              </span>
+              <span className="truncate font-mono text-neutral-700" title={renderValue(data[k])}>
+                {renderValue(data[k])}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <Section title="question" tone="sky" meta={`${question.length.toLocaleString()} chars`}>
+        {question ? (
+          <RichText text={question} className="text-[14px] font-medium leading-relaxed text-neutral-900" />
+        ) : (
+          <span className="text-sm italic text-neutral-400">(empty)</span>
+        )}
+      </Section>
+
+      <Section title="answer" tone="emerald" meta={`${answer.length.toLocaleString()} chars`}>
+        {answer ? (
+          <RichText text={answer} className="text-[13.5px] leading-relaxed text-neutral-900" />
+        ) : (
+          <span className="text-sm italic text-neutral-400">(empty)</span>
+        )}
+      </Section>
+
+      {cot && (
+        <Section
+          title="chain of thought"
+          tone="violet"
+          meta={`${cot.length.toLocaleString()} chars`}
+          collapsible
+          defaultOpen={false}
+        >
+          <RichText text={cot} className="text-[13px] leading-relaxed text-neutral-600" />
+        </Section>
+      )}
+
+      {chunk && (
+        <Section
+          title="source chunk"
+          tone="neutral"
+          meta={`${chunk.length.toLocaleString()} chars`}
+          collapsible
+          defaultOpen={false}
+        >
+          <HtmlTableView html={chunk} />
+        </Section>
+      )}
+
+      {extras.length > 0 && (
+        <div className="divide-y divide-neutral-100 rounded-lg border border-neutral-100 bg-neutral-50/40">
+          {extras.map(([k, v]) => (
+            <FieldRow key={k} k={k} v={v} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function FieldRow({ k, v }: { k: string; v: unknown }) {
   return (
