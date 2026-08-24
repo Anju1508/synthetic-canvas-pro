@@ -1131,6 +1131,52 @@ function HtmlTableView({ html }: { html: string }) {
   );
 }
 
+function RichText({ text, className }: { text: string; className?: string }) {
+  const blocks = useMemo(() => {
+    const lines = text.replace(/\u00a0/g, " ").split(/\n/);
+    const out: { type: "p" | "li"; content: string }[] = [];
+    for (const raw of lines) {
+      const line = raw.replace(/[\u2011\u2013\u2014]/g, "-").trimEnd();
+      if (!line.trim()) continue;
+      const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+      if (bullet) out.push({ type: "li", content: bullet[1] ?? "" });
+      else out.push({ type: "p", content: line.replace(/^#{1,6}\s*/, "") });
+    }
+    return out;
+  }, [text]);
+
+  const inline = (s: string, key: number) => (
+    <span key={key}>
+      {s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+        part.startsWith("**") && part.endsWith("**") ? (
+          <strong key={i} className="font-semibold text-neutral-900">
+            {part.slice(2, -2)}
+          </strong>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </span>
+  );
+
+  return (
+    <div className={`space-y-1.5 ${className ?? ""}`}>
+      {blocks.map((b, i) =>
+        b.type === "li" ? (
+          <div key={i} className="flex gap-2">
+            <span className="select-none text-neutral-400">•</span>
+            <span className="min-w-0 break-words">{inline(b.content, i)}</span>
+          </div>
+        ) : (
+          <p key={i} className="break-words">
+            {inline(b.content, i)}
+          </p>
+        ),
+      )}
+    </div>
+  );
+}
+
 function QARecordView({ data }: { data: Record<string, unknown> }) {
   const question = typeof data.question_text === "string" ? data.question_text : "";
   const answer = typeof data.answer === "string" ? data.answer : "";
