@@ -20,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   LoaderCircle,
+  Star,
 } from "lucide-react";
 
 export const Route = createFileRoute("/")({
@@ -51,6 +52,8 @@ interface Row {
   data: Record<string, unknown>;
   feedback: Feedback;
   comment: string;
+  /** Importance rating, 0 = unrated, 1-5 stars */
+  rating: number;
 }
 
 const PAGE_SIZE = 30;
@@ -138,6 +141,11 @@ function parseCellValue(value: unknown): unknown {
   }
 }
 
+function clampRating(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(5, Math.max(0, Math.round(value)));
+}
+
 async function parseWorkbook(file: File): Promise<Row[]> {
   const workbook = new ExcelJS.Workbook();
   // Some workbook producers omit optional sheet names; ExcelJS expects a string.
@@ -153,6 +161,9 @@ async function parseWorkbook(file: File): Promise<Row[]> {
   );
   const feedbackIndex = columns.findIndex((value) => String(value ?? "").toLowerCase() === "feedback");
   const commentIndex = columns.findIndex((value) => String(value ?? "").toLowerCase() === "comment");
+  const ratingIndex = columns.findIndex((value) =>
+    String(value ?? "").toLowerCase().startsWith("importance"),
+  );
   const rows: Row[] = [];
 
   worksheet.eachRow((excelRow, rowNumber) => {
@@ -160,7 +171,7 @@ async function parseWorkbook(file: File): Promise<Row[]> {
     const data: Record<string, unknown> = {};
     let hasData = false;
     columns.forEach((header, index) => {
-      if (!header || header === "#" || index === feedbackIndex || index === commentIndex) return;
+      if (!header || header === "#" || index === feedbackIndex || index === commentIndex || index === ratingIndex) return;
       const value = excelValue(excelRow.getCell(index).value);
       data[header] = parseCellValue(value);
       if (value !== "" && value !== null && value !== undefined) hasData = true;
@@ -174,6 +185,7 @@ async function parseWorkbook(file: File): Promise<Row[]> {
       data,
       feedback: feedbackValue === "like" || feedbackValue === "dislike" ? feedbackValue : null,
       comment: commentIndex > 0 ? String(excelValue(excelRow.getCell(commentIndex).value) ?? "") : "",
+      rating: ratingIndex > 0 ? clampRating(Number(excelValue(excelRow.getCell(ratingIndex).value))) : 0,
     });
   });
   return rows;
@@ -187,7 +199,7 @@ function Index() {
   const [editError, setEditError] = useState<string>("");
   const [commentingId, setCommentingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "like" | "dislike" | "none" | "commented">("all");
+  const [filter, setFilter] = useState<"all" | "like" | "dislike" | "none" | "commented" | "high">("all");
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState<"import" | "export" | null>(null);
   const [fileError, setFileError] = useState("");
@@ -198,12 +210,26 @@ function Index() {
     let liked = 0;
     let disliked = 0;
     let commented = 0;
+    let ratedCount = 0;
+    let ratingSum = 0;
     for (const row of rows) {
+      if (row.rating > 0) {
+        ratedCount += 1;
+        ratingSum += row.rating;
+      }
       if (row.feedback === "like") liked += 1;
       if (row.feedback === "dislike") disliked += 1;
       if (row.comment.trim()) commented += 1;
     }
-    return { total: rows.length, liked, disliked, commented, pending: rows.length - liked - disliked };
+    return {
+      total: rows.length,
+      liked,
+      disliked,
+      commented,
+      pending: rows.length - liked - disliked,
+      rated: ratedCount,
+      avgRating: ratedCount ? ratingSum / ratedCount : 0,
+    };
   }, [rows]);
 
   const rowIndexes = useMemo(() => new Map(rows.map((row, index) => [row.id, index])), [rows]);
@@ -214,6 +240,7 @@ function Index() {
     else if (filter === "dislike") r = r.filter((x) => x.feedback === "dislike");
     else if (filter === "none") r = r.filter((x) => x.feedback === null);
     else if (filter === "commented") r = r.filter((x) => x.comment.trim());
+    else if (filter === "high") r = r.filter((x) => x.rating >= 4);
     if (deferredSearch.trim()) {
       const q = deferredSearch.toLowerCase();
       r = r.filter((x) => JSON.stringify(x.data).toLowerCase().includes(q));
@@ -237,7 +264,7 @@ function Index() {
     try {
       const importedRows = /\.xlsx$/i.test(f.name)
         ? await parseWorkbook(f)
-        : parseInput(await f.text()).map((data) => ({ id: uid(), data, feedback: null, comment: "" }));
+        : parseInput(await f.text()).map((data) => ({ id: uid(), data, feedback: null, comment: "", rating: 0 }));
       if (!importedRows.length) throw new Error("No valid data rows were found in this file.");
       setRows(importedRows);
       setFileName(f.name);
@@ -276,12 +303,18 @@ function Index() {
           "LLMs are text-trained neural networks capable of generating coherent multi-domain responses.",
       },
     ];
-    setRows(sample.map((d) => ({ id: uid(), data: d, feedback: null, comment: "" })));
+    setRows(sample.map((d) => ({ id: uid(), data: d, feedback: null, comment: "", rating: 0 })));
     setFileName("sample-dataset.json");
   }
 
   function setFeedback(id: string, fb: Feedback) {
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, feedback: r.feedback === fb ? null : fb } : r)));
+  }
+
+  function setRating(id: string, rating: number) {
+    setRows((rs) =>
+      rs.map((r) => (r.id === id ? { ...r, rating: r.rating === rating ? 0 : rating } : r)),
+    );
   }
 
   function updateComment(id: string, comment: string) {
@@ -315,7 +348,7 @@ function Index() {
     const template = rows[0]?.data
       ? Object.fromEntries(Object.keys(rows[0].data).map((k) => [k, ""]))
       : { instruction: "", input: "", output: "" };
-    const newRow: Row = { id: uid(), data: template, feedback: null, comment: "" };
+    const newRow: Row = { id: uid(), data: template, feedback: null, comment: "", rating: 0 };
     setRows((rs) => [newRow, ...rs]);
     setEditingId(newRow.id);
     setEditDraft(JSON.stringify(template, null, 2));
@@ -339,6 +372,7 @@ function Index() {
       { header: "#", key: "__idx", width: 6 },
       ...dataKeys.map((k) => ({ header: k, key: k, width: 40 })),
       { header: "Feedback", key: "__feedback", width: 12 },
+      { header: "Importance (1-5)", key: "__rating", width: 16 },
       { header: "Comment", key: "__comment", width: 40 },
     ];
     ws.columns = columns;
@@ -361,6 +395,7 @@ function Index() {
       const rowData: Record<string, unknown> = {
         __idx: i + 1,
         __feedback: r.feedback ?? "",
+        __rating: r.rating || "",
         __comment: r.comment,
       };
       dataKeys.forEach((k) => {
@@ -474,12 +509,18 @@ function Index() {
         ) : (
           <>
             {/* Stats */}
-            <section className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
+            <section className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-6">
               <StatCard label="Total samples" value={stats.total} accent="neutral" icon={<Database size={14} />} />
               <StatCard label="Liked" value={stats.liked} accent="emerald" icon={<ThumbsUp size={14} />} />
               <StatCard label="Disliked" value={stats.disliked} accent="rose" icon={<ThumbsDown size={14} />} />
               <StatCard label="Commented" value={stats.commented} accent="amber" icon={<MessageSquare size={14} />} />
               <StatCard label="Pending" value={stats.pending} accent="slate" icon={<Sparkles size={14} />} />
+              <StatCard
+                label={`Avg importance (${stats.rated} rated)`}
+                value={stats.avgRating ? `${stats.avgRating.toFixed(1)}★` : "—"}
+                accent="indigo"
+                icon={<Star size={14} />}
+              />
             </section>
 
             {/* Toolbar */}
@@ -505,6 +546,7 @@ function Index() {
                       ["dislike", "Disliked"],
                       ["none", "Unrated"],
                       ["commented", "Commented"],
+                      ["high", "High importance"],
                     ] as const
                   ).map(([k, label]) => (
                     <button
@@ -565,6 +607,7 @@ function Index() {
                       onDelete={() => deleteRow(row.id)}
                       onLike={() => setFeedback(row.id, "like")}
                       onDislike={() => setFeedback(row.id, "dislike")}
+                      onRate={(value) => setRating(row.id, value)}
                       onToggleComment={() =>
                         setCommentingId((c) => (c === row.id ? null : row.id))
                       }
@@ -647,8 +690,8 @@ function StatCard({
   icon,
 }: {
   label: string;
-  value: number;
-  accent: "neutral" | "emerald" | "rose" | "amber" | "slate";
+  value: number | string;
+  accent: "neutral" | "emerald" | "rose" | "amber" | "slate" | "indigo";
   icon: React.ReactNode;
 }) {
   const accents: Record<string, string> = {
@@ -657,6 +700,7 @@ function StatCard({
     rose: "bg-rose-50 text-rose-700 ring-1 ring-rose-200",
     amber: "bg-amber-50 text-amber-700 ring-1 ring-amber-200",
     slate: "bg-slate-50 text-slate-700 ring-1 ring-slate-200",
+    indigo: "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200",
   };
   return (
     <div className="rounded-xl border border-neutral-200 bg-white p-4 shadow-sm">
@@ -689,6 +733,7 @@ function RowCard({
   onDelete,
   onLike,
   onDislike,
+  onRate,
   onToggleComment,
   onCommentSave,
 }: {
@@ -705,6 +750,7 @@ function RowCard({
   onDelete: () => void;
   onLike: () => void;
   onDislike: () => void;
+  onRate: (value: number) => void;
   onToggleComment: () => void;
   onCommentSave: (v: string) => void;
 }) {
@@ -743,6 +789,11 @@ function RowCard({
               {row.feedback === "dislike" && (
                 <span className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700">
                   <ThumbsDown size={11} /> disliked
+                </span>
+              )}
+              {row.rating > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                  <Star size={11} className="fill-indigo-500 text-indigo-500" /> {row.rating}/5
                 </span>
               )}
               {row.comment.trim() && (
@@ -835,6 +886,17 @@ function RowCard({
                 <ThumbsDown size={13} /> Dislike
               </button>
             </div>
+            <div className="rounded-lg border border-neutral-200 bg-white px-2.5 py-2">
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+                  Importance
+                </span>
+                <span className="text-[10px] font-medium tabular-nums text-neutral-500">
+                  {row.rating ? `${row.rating}/5` : "unrated"}
+                </span>
+              </div>
+              <StarRating value={row.rating} onRate={onRate} />
+            </div>
             <button
               onClick={onToggleComment}
               className={`w-full inline-flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-medium transition ${
@@ -861,6 +923,35 @@ function RowCard({
         </aside>
       </div>
     </article>
+  );
+}
+
+function StarRating({ value, onRate }: { value: number; onRate: (v: number) => void }) {
+  const [hover, setHover] = useState(0);
+  const active = hover || value;
+  return (
+    <div className="flex items-center gap-0.5" onMouseLeave={() => setHover(0)}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => onRate(n)}
+          onMouseEnter={() => setHover(n)}
+          aria-label={`Rate importance ${n} of 5`}
+          aria-pressed={value === n}
+          className="rounded p-0.5 transition hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300"
+        >
+          <Star
+            size={18}
+            className={
+              n <= active
+                ? "fill-amber-400 text-amber-500"
+                : "fill-transparent text-neutral-300"
+            }
+          />
+        </button>
+      ))}
+    </div>
   );
 }
 
